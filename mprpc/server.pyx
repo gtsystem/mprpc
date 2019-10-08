@@ -48,6 +48,8 @@ cdef class RPCServer:
 
         self._unpack_encoding = kwargs.pop('unpack_encoding', 'utf-8')
         self._unpack_params = kwargs.pop('unpack_params', dict(use_list=False))
+        if 'read_size' not in self._unpack_params:
+            self._unpack_params['read_size'] = SOCKET_RECV_SIZE
 
         self._tcp_no_delay = kwargs.pop('tcp_no_delay', False)
         self._methods = {}
@@ -82,14 +84,9 @@ cdef class RPCServer:
         cdef bytes data
         cdef int msg_id
 
-        unpacker = msgpack.Unpacker(encoding=self._unpack_encoding,
+        unpacker = msgpack.Unpacker(conn, encoding=self._unpack_encoding,
                                     **self._unpack_params)
-        while True:
-            data = conn.recv(SOCKET_RECV_SIZE)
-            if not data:
-                break
-
-            unpacker.feed(data)
+        while not conn.completed:
             try:
                 req = next(unpacker)
             except StopIteration:
@@ -98,7 +95,7 @@ cdef class RPCServer:
             if type(req) not in (tuple, list):
                 self._send_error("Invalid protocol", -1, conn)
                 # reset unpacker as it might have garbage data
-                unpacker = msgpack.Unpacker(encoding=self._unpack_encoding,
+                unpacker = msgpack.Unpacker(conn, encoding=self._unpack_encoding,
                                             **self._unpack_params)
                 continue
 
@@ -149,12 +146,18 @@ cdef class RPCServer:
 
 cdef class _RPCConnection:
     cdef _socket
+    cdef bint completed
 
     def __init__(self, socket):
         self._socket = socket
+        self.completed = False
 
-    cdef recv(self, int buf_size):
-        return self._socket.recv(buf_size)
+    def read(self, int buf_size):
+        cdef bytes data
+        data = self._socket.recv(buf_size)
+        if not data:
+            self.completed = True
+        return data
 
     cdef send(self, bytes msg):
         self._socket.sendall(msg)
